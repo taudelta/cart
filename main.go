@@ -3,13 +3,26 @@ package main
 import (
 	"context"
 	"flag"
+	"log"
 	"net/http"
 
 	"github.com/go-redis/redis/v9"
 	"github.com/gofiber/fiber/v2"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/taudelta/cart/params"
 	"github.com/taudelta/cart/service"
 	"github.com/taudelta/cart/service/dto"
+)
+
+var (
+	requestsCount = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "requests_count",
+	}, []string{"method"})
+
+	requestsErrorCount = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "requests_error_count",
+	}, []string{"method"})
 )
 
 func main() {
@@ -18,6 +31,13 @@ func main() {
 	flag.Parse()
 	flag.StringVar(&serviceAddr, "addr", ":8000", "service listen address")
 	flag.StringVar(&redisURL, "redis_url", "redis://localhost:6379/1", "redis database listen address")
+
+	registry := prometheus.NewRegistry()
+
+	registry.MustRegister(
+		requestsCount,
+		requestsErrorCount,
+	)
 
 	app := fiber.New()
 
@@ -36,18 +56,44 @@ func main() {
 	}
 
 	app.Get("/", func(c *fiber.Ctx) error {
+		requestsCount.With(prometheus.Labels{
+			"method": "get",
+		}).Add(1)
 		userID := c.Query("user_id")
 		cart, err := cartService.GetCart(userID)
 		if err != nil {
+			requestsErrorCount.With(prometheus.Labels{
+				"method": "get",
+			}).Add(1)
 			return err
 		}
 		return c.Status(http.StatusOK).JSON(&cart)
 	})
 
-	app.Post("/add-item", func(c *fiber.Ctx) error {
-		var param params.CartAdd
+	app.Get("/metrics", func(c *fiber.Ctx) error {
+		metrics, err := registry.Gather()
+		if err != nil {
+			return err
+		}
+		return c.Status(http.StatusOK).JSON(metrics)
+	})
 
-		err := c.BodyParser(&param)
+	app.Post("/add-item", func(c *fiber.Ctx) error {
+		requestsCount.With(prometheus.Labels{
+			"method": "add-item",
+		}).Add(1)
+
+		var param params.CartAdd
+		var err error
+		defer func() {
+			if err != nil {
+				requestsErrorCount.With(prometheus.Labels{
+					"method": "add-item",
+				}).Add(1)
+			}
+		}()
+
+		err = c.BodyParser(&param)
 		if err != nil {
 			return err
 		}
@@ -60,13 +106,27 @@ func main() {
 			})
 		}
 
-		return cartService.AddItem(param.UserID, items)
+		err = cartService.AddItem(param.UserID, items)
+		return err
 	})
 
 	app.Post("/remove-item", func(c *fiber.Ctx) error {
+		requestsCount.With(prometheus.Labels{
+			"method": "remove-item",
+		}).Add(1)
+
+		var err error
+		defer func() {
+			if err != nil {
+				requestsErrorCount.With(prometheus.Labels{
+					"method": "remove-item",
+				}).Add(1)
+			}
+		}()
+
 		var param params.CartRemove
 
-		err := c.BodyParser(&param)
+		err = c.BodyParser(&param)
 		if err != nil {
 			return err
 		}
@@ -79,17 +139,35 @@ func main() {
 			})
 		}
 
-		return cartService.RemoveItem(param.UserID, removeItems, param.RemoveAll)
+		err = cartService.RemoveItem(param.UserID, removeItems, param.RemoveAll)
+		return err
 	})
 
 	app.Post("/delete", func(c *fiber.Ctx) error {
+		requestsCount.With(prometheus.Labels{
+			"method": "delete",
+		}).Add(1)
+
+		var err error
+		defer func() {
+			if err != nil {
+				requestsErrorCount.With(prometheus.Labels{
+					"method": "delete",
+				}).Add(1)
+			}
+		}()
+
 		var param params.Delete
-		if err := c.BodyParser(&param); err != nil {
+		err = c.BodyParser(&param)
+		if err != nil {
 			return err
 		}
 
-		return cartService.DeleteCart(param.UserID)
+		err = cartService.DeleteCart(param.UserID)
+		return err
 	})
 
-	app.Listen(serviceAddr)
+	if err := app.Listen(serviceAddr); err != nil {
+		log.Panic(err)
+	}
 }

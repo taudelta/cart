@@ -11,7 +11,7 @@ import (
 	"github.com/taudelta/cart/service/dto"
 )
 
-func TestBooks(t *testing.T) {
+func TestCart(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Cart Suite")
 }
@@ -126,11 +126,17 @@ var _ = Describe("cart add item", func() {
 var _ = Describe("cart remove item", func() {
 	When("remove 1 item from cart", func() {
 		BeforeEach(func() {
-			cartService.Storage.FlushDB(context.Background())
-			cartService.AddItem("1", []dto.CartItem{
+			err := cartService.Storage.FlushDB(context.Background()).Err()
+			if err != nil {
+				panic(err)
+			}
+			err = cartService.AddItem("1", []dto.CartItem{
 				{Sku: "A", Quantity: 2},
 				{Sku: "B", Quantity: 2},
 			})
+			if err != nil {
+				panic(err)
+			}
 		})
 		Context("remove item", func() {
 			It("service must return no error", func() {
