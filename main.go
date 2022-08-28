@@ -2,17 +2,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"flag"
-	"log"
 	"net/http"
 
 	"github.com/go-redis/redis/v9"
 	"github.com/gofiber/fiber/v2"
-	"github.com/taudelta/cart/model"
 	"github.com/taudelta/cart/params"
-	"github.com/taudelta/cart/response"
+	"github.com/taudelta/cart/service"
+	"github.com/taudelta/cart/service/dto"
 )
 
 func main() {
@@ -34,28 +31,16 @@ func main() {
 		panic(err)
 	}
 
+	cartService := &service.Cart{
+		Storage: redisClient,
+	}
+
 	app.Get("/", func(c *fiber.Ctx) error {
 		userID := c.Query("user_id")
-		cartData := redisClient.HGetAll(context.Background(), userID)
-		if err := cartData.Err(); err != nil {
-			log.Println("get cart error", err)
+		cart, err := cartService.GetCart(userID)
+		if err != nil {
 			return err
 		}
-
-		cartValue := cartData.Val()
-		if cartValue == nil {
-			return errors.New("no cart is found")
-		}
-
-		items := make([]model.CartItem, 0)
-		if cartValue["items"] != "" {
-			if err := json.Unmarshal([]byte(cartValue["items"]), &items); err != nil {
-				return err
-			}
-		}
-
-		var cart model.Cart
-		cart.Items = items
 		return c.Status(http.StatusOK).JSON(&cart)
 	})
 
@@ -67,71 +52,43 @@ func main() {
 			return err
 		}
 
-		ctx := context.Background()
-
-		cartData := redisClient.HGetAll(ctx, param.UserID)
-		if err := cartData.Err(); err != nil {
-			return err
+		items := make([]dto.CartItem, 0, len(param.Items))
+		for _, i := range param.Items {
+			items = append(items, dto.CartItem{
+				Sku:      i.Sku,
+				Quantity: int(i.Quantity),
+			})
 		}
 
-		cartValue := cartData.Val()
+		return cartService.AddItem(param.UserID, items)
+	})
 
-		log.Println("cart", param.UserID, cartValue)
+	app.Post("/remove-item", func(c *fiber.Ctx) error {
+		var param params.CartRemove
 
-		var items []*model.CartItem
-
-		if cartValue["items"] != "" {
-			if err := json.Unmarshal([]byte(cartValue["items"]), &items); err != nil {
-				return err
-			}
-		}
-
-		itemsMap := make(map[string]*model.CartItem)
-		for _, i := range items {
-			log.Printf("item: %+v\n", i)
-			itemsMap[i.Sku] = i
-		}
-
-		for _, addItem := range param.Items {
-			if _, ok := itemsMap[addItem.Sku]; ok {
-				itemsMap[addItem.Sku].Quantity += int(addItem.Quantity)
-			} else {
-				items = append(items, &model.CartItem{
-					Sku:      addItem.Sku,
-					Quantity: int(addItem.Quantity),
-				})
-			}
-		}
-
-		log.Println("add to cart", param.UserID)
-
-		itemBody, err := json.Marshal(&items)
+		err := c.BodyParser(&param)
 		if err != nil {
 			return err
 		}
 
-		pipeline := redisClient.Pipeline()
-		pipeline.HSet(ctx, param.UserID, "items", string(itemBody))
-
-		if _, err := pipeline.Exec(ctx); err != nil {
-			log.Println("failed to add items in cart", err)
-			return err
+		removeItems := make([]dto.CartItem, 0, len(param.Items))
+		for _, i := range param.Items {
+			removeItems = append(removeItems, dto.CartItem{
+				Sku:      i.Sku,
+				Quantity: int(i.Quantity),
+			})
 		}
 
-		var resp response.CartAddOk
-		return c.Status(http.StatusOK).JSON(&resp)
-	})
-
-	app.Post("/remove-item", func(c *fiber.Ctx) error {
-		return nil
+		return cartService.RemoveItem(param.UserID, removeItems, param.RemoveAll)
 	})
 
 	app.Post("/delete", func(c *fiber.Ctx) error {
-		return nil
-	})
+		var param params.Delete
+		if err := c.BodyParser(&param); err != nil {
+			return err
+		}
 
-	app.Post("/set-attribute", func(c *fiber.Ctx) error {
-		return nil
+		return cartService.DeleteCart(param.UserID)
 	})
 
 	app.Listen(serviceAddr)
